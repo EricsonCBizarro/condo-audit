@@ -29,7 +29,7 @@ jobs:
           POSTGRES_USER: condo_audit
           POSTGRES_PASSWORD: ci-only-password
         ports: ["5432:5432"]
-        options: --health-cmd "pg_isready -U condo_audit" --health-interval 3s --health-timeout 3s --health-retries 30
+        options: --health-cmd "pg_isready -U condo_audit -d condo_audit_test" --health-interval 3s --health-timeout 3s --health-retries 30
       redis:
         image: redis:7.4.2-alpine
         ports: ["6379:6379"]
@@ -44,7 +44,7 @@ jobs:
       REDIS_PORT: 6379
       CONTRACTS_PATH: ${{ github.workspace }}/contracts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
@@ -54,7 +54,7 @@ jobs:
       - uses: ramsey/composer-install@v3
         with:
           working-directory: api
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -76,7 +76,7 @@ jobs:
           POSTGRES_USER: condo_audit
           POSTGRES_PASSWORD: ci-only-password
         ports: ["5432:5432"]
-        options: --health-cmd "pg_isready -U condo_audit" --health-interval 3s --health-timeout 3s --health-retries 30
+        options: --health-cmd "pg_isready -U condo_audit -d condo_audit_test" --health-interval 3s --health-timeout 3s --health-retries 30
       redis:
         image: redis:7.4.2-alpine
         ports: ["6379:6379"]
@@ -85,7 +85,7 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379/0
       CONTRACTS_PATH: ${{ github.workspace }}/contracts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Tesseract (Portuguese)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-por
       # The schema is owned by the API's migrations: apply them to the test database.
@@ -101,6 +101,7 @@ jobs:
         working-directory: api
         env:
           DB_HOST: 127.0.0.1
+          DB_PORT: 5432
           DB_DATABASE: condo_audit_test
           DB_USERNAME: condo_audit
         run: cp .env.example .env && php artisan key:generate && php artisan migrate --force
@@ -123,7 +124,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: make env
       - run: make up
       - run: make test
@@ -145,7 +146,7 @@ jobs:
     name: Secret scan · gitleaks
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.24.3 git /repo --redact --verbose --config /repo/.gitleaks.toml
