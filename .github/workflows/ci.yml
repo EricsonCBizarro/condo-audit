@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DB_PASSWORD: ci-only-password
+
+jobs:
+  api:
+    name: API · PHPUnit, PHPStan, Pint
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.0-pg16
+        env:
+          POSTGRES_DB: condo_audit_test
+          POSTGRES_USER: condo_audit
+          POSTGRES_PASSWORD: ${{ env.DB_PASSWORD }}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U condo_audit" --health-interval 3s --health-timeout 3s --health-retries 30
+      redis:
+        image: redis:7.4.2-alpine
+        ports: ["6379:6379"]
+    defaults:
+      run:
+        working-directory: api
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_USERNAME: condo_audit
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+      CONTRACTS_PATH: ${{ github.workspace }}/contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: pgsql, pdo_pgsql, redis
+          coverage: none
+          tools: composer:v2
+      - uses: ramsey/composer-install@v3
+        with:
+          working-directory: api
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: cp .env.example .env && php artisan key:generate
+      - run: npm ci && npm run build
+      - run: vendor/bin/pint --test
+      - run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+      - run: php artisan test --compact
+
+  pipeline:
+    name: Pipeline · pytest, mypy, ruff
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.0-pg16
+        env:
+          POSTGRES_DB: condo_audit_test
+          POSTGRES_USER: condo_audit
+          POSTGRES_PASSWORD: ${{ env.DB_PASSWORD }}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U condo_audit" --health-interval 3s --health-timeout 3s --health-retries 30
+      redis:
+        image: redis:7.4.2-alpine
+        ports: ["6379:6379"]
+    env:
+      DATABASE_URL: postgresql://condo_audit:${{ env.DB_PASSWORD }}@127.0.0.1:5432/condo_audit_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CONTRACTS_PATH: ${{ github.workspace }}/contracts
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tesseract (Portuguese)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-por
+      # The schema is owned by the API's migrations: apply them to the test database.
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: pgsql, pdo_pgsql
+          coverage: none
+      - uses: ramsey/composer-install@v3
+        with:
+          working-directory: api
+      - name: Migrate the test database
+        working-directory: api
+        env:
+          DB_HOST: 127.0.0.1
+          DB_DATABASE: condo_audit_test
+          DB_USERNAME: condo_audit
+        run: cp .env.example .env && php artisan key:generate && php artisan migrate --force
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+      - working-directory: pipeline
+        run: |
+          uv sync --frozen --python 3.12
+          uv run ruff check src tests
+          uv run ruff format --check src tests
+          uv run mypy src tests
+          uv run pytest -q --cov --cov-report=term
+
+  e2e:
+    name: End to end · docker compose, seed, audit evaluation
+    needs: [api, pipeline]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: make env
+      - run: make up
+      - run: make test
+      - run: make seed
+      # Fails the build if precision or recall against the planted ground truth drops below 90%.
+      - run: make eval
+      - run: make report
+      - if: always()
+        run: docker compose logs --no-color > compose.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-output
+          path: |
+            compose.log
+            data/report.md
+
+  secrets:
+    name: Secret scan · gitleaks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.24.3 git /repo --redact --verbose --config /repo/.gitleaks.toml
