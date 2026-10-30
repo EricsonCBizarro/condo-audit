@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/condo-audit/contracts/job.schema.json",
+  "title": "PipelineJob",
+  "description": "Message published by the API on the Redis jobs list and consumed by the Python pipeline worker. job_id is also the primary key of pipeline_runs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "type",
+    "condominium_id",
+    "correlation_id",
+    "enqueued_at",
+    "attempt",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "job_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "type": { "enum": ["document.process", "audit.run"] },
+    "condominium_id": { "type": "integer", "minimum": 1 },
+    "correlation_id": { "type": "string", "minLength": 8, "maxLength": 64 },
+    "enqueued_at": { "type": "string", "format": "date-time" },
+    "attempt": { "type": "integer", "minimum": 0 },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "document.process" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["document_id"],
+            "properties": {
+              "document_id": { "type": "integer", "minimum": 1 },
+              "force": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "audit.run" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "rules": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
