@@ -1,0 +1,11 @@
+# Default gitleaks rules plus project allow-list.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Lock files contain content hashes, not secrets"
+paths = [
+  '''api/composer\.lock''',
+  '''api/package-lock\.json''',
+  '''pipeline/uv\.lock''',
+]

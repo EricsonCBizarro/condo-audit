@@ -1,0 +1,145 @@
+name: condo-audit
+
+x-pipeline-env: &pipeline-env
+  DATABASE_URL: postgresql://${DB_USERNAME}:${DB_PASSWORD}@postgres:5432/${DB_DATABASE}
+  REDIS_URL: redis://redis:6379/0
+  S3_ENDPOINT_URL: http://storage:8333
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+  S3_SECRET_KEY: ${S3_SECRET_KEY}
+  S3_BUCKET: ${S3_BUCKET:-documents}
+  PIPELINE_JOBS_KEY: condo-audit:jobs
+  CONTRACTS_PATH: /contracts
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  postgres:
+    # pgvector from day one: the AI phase stores embeddings next to the data.
+    image: pgvector/pgvector:0.8.0-pg16
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    ports:
+      - "${DB_FORWARD_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE}"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.4.2-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    ports:
+      - "${REDIS_FORWARD_PORT:-56379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # S3-compatible object storage for the original documents (bronze layer).
+  # Swapping it for AWS S3 is configuration only (see docs/adr/0003).
+  storage:
+    image: chrislusf/seaweedfs:3.97
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+    volumes:
+      - ./docker/seaweedfs/entrypoint.sh:/entrypoint.sh:ro
+      - storagedata:/data
+    ports:
+      - "${S3_FORWARD_PORT:-58333}:8333"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 'HTTP/'"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  storage-init:
+    build: { context: ./pipeline, target: dev }
+    image: condo-audit/pipeline:dev
+    command: ["condo-audit", "storage", "ensure-bucket"]
+    environment: *pipeline-env
+    depends_on:
+      storage: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    build: { context: ./api, target: dev }
+    image: condo-audit/api:dev
+    environment:
+      APP_NAME: condo-audit
+      APP_ENV: ${APP_ENV:-local}
+      APP_KEY: ${APP_KEY}
+      APP_DEBUG: ${APP_DEBUG:-true}
+      APP_URL: ${APP_URL:-http://localhost:8080}
+      LOG_CHANNEL: stderr
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${DB_DATABASE}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      SESSION_DRIVER: redis
+      CACHE_STORE: redis
+      QUEUE_CONNECTION: sync
+      DOCUMENTS_DISK: s3
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_BUCKET: ${S3_BUCKET:-documents}
+      AWS_ENDPOINT: http://storage:8333
+      AWS_USE_PATH_STYLE_ENDPOINT: "true"
+      CONTRACTS_PATH: /contracts
+      DEMO_USER_EMAIL: ${DEMO_USER_EMAIL}
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD}
+      # Runs migrations on start. Config/route/view caches stay off in this
+      # development stack so tests and code changes see the real environment.
+      AUTORUN_ENABLED: "true"
+      AUTORUN_LARAVEL_STORAGE_LINK: "false"
+      AUTORUN_LARAVEL_CONFIG_CACHE: "false"
+      AUTORUN_LARAVEL_ROUTE_CACHE: "false"
+      AUTORUN_LARAVEL_VIEW_CACHE: "false"
+      AUTORUN_LARAVEL_EVENT_CACHE: "false"
+      PHP_OPCACHE_ENABLE: "0"
+    volumes:
+      - ./contracts:/contracts:ro
+      - ./data:/data
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      storage-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  worker:
+    build: { context: ./pipeline, target: dev }
+    image: condo-audit/pipeline:dev
+    command: ["condo-audit", "worker"]
+    environment: *pipeline-env
+    volumes:
+      - ./contracts:/contracts:ro
+      - ./data:/data
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  pgdata:
+  redisdata:
+  storagedata:
