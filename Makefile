@@ -28,6 +28,8 @@ env: .env ## Create .env with random secrets (only if missing)
 
 .PHONY: up
 up: .env ## Build and start the whole stack (waits until healthy)
+	@# Create the bind-mounted data dir as you; if Docker creates it, it is owned by root.
+	@mkdir -p data
 	$(COMPOSE) up -d --build --wait
 	@echo "Dashboard: $$(grep ^APP_URL .env | cut -d= -f2)"
 
